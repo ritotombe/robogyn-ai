@@ -21,6 +21,8 @@ try:
 except ImportError:
     imageio_ffmpeg = None
 
+from gynma import GYNMA_DOMAINS, render_gynma
+
 GEARS_DOMAINS: List[Dict[str, Any]] = [
     {
         "id": "depth_perception",
@@ -370,6 +372,34 @@ def analyze_video_and_predict_ai_gears(
     return metrics, ai_scores, ai_reasons, heatmap_rgb
 
 
+def predict_ai_gynma_scores(m: VideoMotionMetrics) -> Tuple[Dict[str, int], Dict[str, str]]:
+    dur = max(1.0, m.task_duration_sec)
+    bursts_per_min = (m.burst_count / dur) * 60.0
+    peak_ratio = m.peak_optical_flow / max(m.mean_optical_flow, 1e-4)
+
+    def _clamp2(val: float) -> int:
+        return int(max(0, min(2, round(val))))
+
+    gynma_scores: Dict[str, int] = {
+        "needle_grasp": _clamp2(0.4 + 1.8 * m.bimanual_symmetry_ratio),
+        "entry_exit": _clamp2(2.0 - max(0.0, (bursts_per_min - 3.0) * 0.14)),
+        "arc": _clamp2(2.0 - max(0.0, (m.motion_cv - 0.38) * 1.45)),
+        "rotation": _clamp2(2.0 - max(0.0, (m.idle_time_pct - 12.0) * 0.038)),
+        "transition": _clamp2(2.1 - max(0.0, (peak_ratio - 1.8) * 0.42)),
+        "regrasp": _clamp2(0.3 + (m.active_motion_pct / 100.0) * 1.9),
+    }
+
+    gynma_reasons: Dict[str, str] = {
+        "needle_grasp": f"{m.bimanual_symmetry_ratio * 100:.0f}% L-R driver stability",
+        "entry_exit": f"{m.burst_count} corrective spikes ({dur:.1f}s)",
+        "arc": f"Arc smoothness CV = {m.motion_cv:.2f}",
+        "rotation": f"{100.0 - m.idle_time_pct:.1f}% continuous rotation flow",
+        "transition": f"{peak_ratio:.2f}x drive-to-withdrawal transition ratio",
+        "regrasp": f"{m.active_motion_pct:.1f}% active manipulation economy",
+    }
+    return gynma_scores, gynma_reasons
+
+
 # ---------------------------------------------------------------------------
 # Main Application (Clean, Emoji-Free, Pure Streamlit Components)
 # ---------------------------------------------------------------------------
@@ -393,20 +423,29 @@ def main() -> None:
         st.session_state["ai_reasons"] = {d["id"]: "Run AI analysis in Step 1" for d in GEARS_DOMAINS}
     if "expert_scores" not in st.session_state:
         st.session_state["expert_scores"] = {d["id"]: 3 for d in GEARS_DOMAINS}
+    if "gynma_ai_scores" not in st.session_state:
+        st.session_state["gynma_ai_scores"] = {d["id"]: 1 for d in GYNMA_DOMAINS}
+    if "gynma_ai_reasons" not in st.session_state:
+        st.session_state["gynma_ai_reasons"] = {d["id"]: "Run AI analysis in Step 1" for d in GYNMA_DOMAINS}
+    if "gynma_expert_scores" not in st.session_state:
+        st.session_state["gynma_expert_scores"] = {d["id"]: 1 for d in GYNMA_DOMAINS}
     if "active_tab_idx" not in st.session_state:
         st.session_state["active_tab_idx"] = 0
 
     st.markdown("## RoboGyn-AI")
-    st.caption("Robotic Suturing Video Assessment  |  AI Scoring vs. Expert GEARS Benchmark")
+    st.caption(
+        "Robotic Suturing Video Assessment  |  Standard GEARS (1–5) & Novelty GyNMA Needle Motion Assessment (0–2)"
+    )
 
     step_labels = [
         "1. Video Input",
         "2. Scoring AI",
         "3. Scoring Expert",
         "4. AI vs. Expert Comparison",
+        "5. GyNMA Module (Novelty)",
     ]
     active_idx = int(st.session_state.get("active_tab_idx", 0))
-    nav_cols = st.columns(4)
+    nav_cols = st.columns(5)
     for idx, label in enumerate(step_labels):
         with nav_cols[idx]:
             if st.button(
@@ -479,13 +518,16 @@ def main() -> None:
                         th2.image(f_end, caption=f"End Frame ({end_s:.1f}s)", use_container_width=True)
 
                     if st.button("Run AI Video Analysis & Scoring", type="primary", use_container_width=True):
-                        with st.spinner("Analyzing video motion and generating AI GEARS scores..."):
+                        with st.spinner("Analyzing video motion and generating AI GEARS & GyNMA scores..."):
                             m, ai_sc, ai_rs, hmap = analyze_video_and_predict_ai_gears(
                                 vpath, st.session_state["video_name"], start_s, end_s
                             )
+                            g_sc, g_rs = predict_ai_gynma_scores(m)
                             st.session_state["metrics"] = m
                             st.session_state["ai_scores"] = ai_sc
                             st.session_state["ai_reasons"] = ai_rs
+                            st.session_state["gynma_ai_scores"] = g_sc
+                            st.session_state["gynma_ai_reasons"] = g_rs
                             st.session_state["heatmap"] = hmap
                             st.session_state["trimmed_video_path"] = ensure_trimmed_segment_mp4(vpath, start_s, end_s)
                             st.session_state["active_tab_idx"] = 1
@@ -496,7 +538,7 @@ def main() -> None:
                     st.video(bpath, start_time=int(start_s))
 
     # =======================================================================
-    # STEP 2: Scoring AI
+    # STEP 2: Scoring AI (GEARS 1–5 + GyNMA Novelty 0–2)
     # =======================================================================
     elif active_idx == 1:
         m: Optional[VideoMotionMetrics] = st.session_state["metrics"]
@@ -504,12 +546,14 @@ def main() -> None:
             st.info("Upload a video in Step 1 and click 'Run AI Video Analysis & Scoring'.")
         else:
             ai_total = sum(st.session_state["ai_scores"].values())
-            k1, k2, k3, k4, k5 = st.columns(5)
+            gynma_ai_total = sum(st.session_state["gynma_ai_scores"].values())
+            k1, k2, k3, k4, k5, k6 = st.columns(6)
             k1.metric("AI GEARS Total", f"{ai_total} / 30")
-            k2.metric("Task Duration", f"{m.task_duration_sec:.1f} s")
-            k3.metric("Active Motion", f"{m.active_motion_pct:.1f}%")
-            k4.metric("Bimanual Balance", f"{m.bimanual_symmetry_ratio * 100:.0f}%")
-            k5.metric("Motion Spikes", f"{m.burst_count}")
+            k2.metric("AI GyNMA Total", f"{gynma_ai_total} / 12")
+            k3.metric("Task Duration", f"{m.task_duration_sec:.1f} s")
+            k4.metric("Active Motion", f"{m.active_motion_pct:.1f}%")
+            k5.metric("Bimanual Balance", f"{m.bimanual_symmetry_ratio * 100:.0f}%")
+            k6.metric("Motion Spikes", f"{m.burst_count}")
 
             p_col, h_col = st.columns([1.65, 1.0])
             with p_col:
@@ -542,7 +586,7 @@ def main() -> None:
                     if st.session_state["heatmap"] is not None:
                         st.image(st.session_state["heatmap"], use_container_width=True)
 
-            st.markdown("#### AI GEARS Domain Scores (1–5)")
+            st.markdown("#### A. AI Standard GEARS Domain Scores (Scale 1–5, Max 30)")
             grid_cols = st.columns(2)
             for idx, d in enumerate(GEARS_DOMAINS):
                 did = d["id"]
@@ -556,20 +600,39 @@ def main() -> None:
                         st.progress(sc / 5.0)
                         st.caption(reason)
 
+            st.markdown("#### B. AI Novelty GyNMA — Gynecologic Needle Motion Scores (Scale 0–2, Max 12)")
+            g_cols = st.columns(2)
+            for idx, d in enumerate(GYNMA_DOMAINS):
+                did = d["id"]
+                sc = st.session_state["gynma_ai_scores"][did]
+                reason = st.session_state["gynma_ai_reasons"][did]
+                with g_cols[idx % 2]:
+                    with st.container(border=True):
+                        h_left, h_right = st.columns([3, 1])
+                        h_left.markdown(f"**{d['name']}**")
+                        h_right.markdown(f"**{sc} / 2**")
+                        st.progress(sc / 2.0)
+                        st.caption(f"{d['definition']}  •  {reason}")
+
             if st.button("Continue to 3. Scoring Expert", type="primary", use_container_width=True):
                 st.session_state["active_tab_idx"] = 2
                 st.rerun()
 
     # =======================================================================
-    # STEP 3: Scoring Expert (Includes Selected Segment Video Player)
+    # STEP 3: Scoring Expert (Selected Segment Video + GEARS + GyNMA Novelty)
     # =======================================================================
     elif active_idx == 2:
         for d in GEARS_DOMAINS:
             did = d["id"]
             if f"exp_slider_{did}" in st.session_state:
                 st.session_state["expert_scores"][did] = int(st.session_state[f"exp_slider_{did}"])
+        for d in GYNMA_DOMAINS:
+            did = d["id"]
+            if f"exp_gynma_slider_{did}" in st.session_state:
+                st.session_state["gynma_expert_scores"][did] = int(st.session_state[f"exp_gynma_slider_{did}"])
 
         exp_tot_now = sum(st.session_state["expert_scores"].values())
+        exp_gynma_tot = sum(st.session_state["gynma_expert_scores"].values())
 
         vpath_exp = st.session_state.get("video_path")
         if vpath_exp and os.path.exists(vpath_exp):
@@ -577,24 +640,28 @@ def main() -> None:
             seg_e = float(st.session_state.get("seg_end", 30.0))
             trimmed_p = ensure_trimmed_segment_mp4(vpath_exp, seg_s, seg_e)
             with st.container(border=True):
-                ev_col1, ev_col2 = st.columns([1.3, 1.2])
+                ev_col1, ev_col2 = st.columns([1.25, 1.35])
                 with ev_col1:
                     st.video(trimmed_p)
                 with ev_col2:
                     st.markdown("#### Selected Video Segment for Expert Review")
                     st.caption(f"File: {st.session_state.get('video_name', '')}")
-                    m_c1, m_c2, m_c3 = st.columns(3)
+                    m_c1, m_c2, m_c3, m_c4 = st.columns(4)
                     m_c1.metric("Start - End", f"{seg_s:.1f}s - {seg_e:.1f}s")
-                    m_c2.metric("Segment Duration", f"{seg_e - seg_s:.1f} s")
-                    m_c3.metric("Expert GEARS Total", f"{exp_tot_now} / 30")
+                    m_c2.metric("Duration", f"{seg_e - seg_s:.1f} s")
+                    m_c3.metric("Expert GEARS", f"{exp_tot_now} / 30")
+                    m_c4.metric("Expert GyNMA", f"{exp_gynma_tot} / 12")
         else:
-            top_c1, top_c2 = st.columns([3, 1])
+            top_c1, top_c2, top_c3 = st.columns([2.4, 1, 1])
             with top_c1:
-                st.markdown("#### Expert GEARS Scoring (1–5)")
-                st.caption("Rate each domain from 1 to 5 based on the surgical video segment.")
+                st.markdown("#### Expert Clinical Evaluation (GEARS & GyNMA Novelty)")
+                st.caption("Rate the 6 standard GEARS domains (1–5) and 6 Novelty GyNMA needle domains (0–2).")
             with top_c2:
                 st.metric("Expert GEARS Total", f"{exp_tot_now} / 30")
+            with top_c3:
+                st.metric("Expert GyNMA Total", f"{exp_gynma_tot} / 12")
 
+        st.markdown("#### A. Expert Standard GEARS Scoring (Scale 1–5, Max 30)")
         exp_cols = st.columns(2)
         for idx, d in enumerate(GEARS_DOMAINS):
             did = d["id"]
@@ -616,12 +683,34 @@ def main() -> None:
                         label_visibility="collapsed",
                     )
 
+        st.markdown("#### B. Expert Novelty GyNMA — Gynecologic Needle Motion Scoring (Scale 0–2, Max 12)")
+        g_exp_cols = st.columns(2)
+        for idx, d in enumerate(GYNMA_DOMAINS):
+            did = d["id"]
+            cur_gval = int(st.session_state["gynma_expert_scores"][did])
+            with g_exp_cols[idx % 2]:
+                with st.container(border=True):
+                    hdr_l, hdr_r = st.columns([2.5, 1.5])
+                    hdr_l.markdown(f"**{d['name']}**")
+                    hdr_r.markdown(f"Score: **{cur_gval} / 2**")
+
+                    st.caption(f"{d['definition']}  •  {d['anchors']}")
+                    st.session_state["gynma_expert_scores"][did] = st.slider(
+                        d["name"],
+                        min_value=0,
+                        max_value=2,
+                        value=cur_gval,
+                        step=1,
+                        key=f"exp_gynma_slider_{did}",
+                        label_visibility="collapsed",
+                    )
+
         if st.button("Continue to 4. AI vs. Expert Comparison", type="primary", use_container_width=True):
             st.session_state["active_tab_idx"] = 3
             st.rerun()
 
     # =======================================================================
-    # STEP 4: AI vs. Expert Comparison
+    # STEP 4: AI vs. Expert Comparison (GEARS + GyNMA Novelty)
     # =======================================================================
     elif active_idx == 3:
         m = st.session_state.get("metrics")
@@ -635,11 +724,20 @@ def main() -> None:
         mae = float(np.mean(abs_diffs))
         agreement_pct = max(0.0, (1.0 - mae / 4.0) * 100.0)
 
+        g_ai_scores = st.session_state["gynma_ai_scores"]
+        g_exp_scores = st.session_state["gynma_expert_scores"]
+        g_ai_tot = sum(g_ai_scores.values())
+        g_exp_tot = sum(g_exp_scores.values())
+        g_diffs = [g_ai_scores[d["id"]] - g_exp_scores[d["id"]] for d in GYNMA_DOMAINS]
+        g_mae = float(np.mean([abs(x) for x in g_diffs]))
+        g_agreement_pct = max(0.0, (1.0 - g_mae / 2.0) * 100.0)
+
+        st.markdown("#### A. Standard GEARS Comparison (Scale 1–5, Total / 30)")
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("AI Total Score", f"{ai_tot} / 30")
-        c2.metric("Expert Total Score", f"{exp_tot} / 30")
-        c3.metric("Difference (AI - Expert)", f"{ai_tot - exp_tot:+d}")
-        c4.metric("Agreement Rate", f"{agreement_pct:.1f}% (MAE {mae:.2f})")
+        c1.metric("AI GEARS Total", f"{ai_tot} / 30")
+        c2.metric("Expert GEARS Total", f"{exp_tot} / 30")
+        c3.metric("GEARS Difference", f"{ai_tot - exp_tot:+d}")
+        c4.metric("GEARS Agreement", f"{agreement_pct:.1f}% (MAE {mae:.2f})")
 
         names = [d["name"] for d in GEARS_DOMAINS]
         ai_list = [ai_scores[d["id"]] for d in GEARS_DOMAINS]
@@ -656,12 +754,12 @@ def main() -> None:
                 )
                 fig_bar.update_layout(
                     barmode="group",
-                    title=dict(text="AI Score vs. Expert Score per GEARS Domain", font=dict(size=14)),
+                    title=dict(text="GEARS: AI Score vs. Expert Score (1–5)", font=dict(size=14)),
                     yaxis=dict(range=[0, 5.5], dtick=1, title="Score (1–5)", gridcolor="#f1f5f9"),
                     paper_bgcolor="rgba(0,0,0,0)",
                     plot_bgcolor="rgba(0,0,0,0)",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                    height=310,
+                    height=295,
                     margin=dict(l=15, r=15, t=45, b=15),
                 )
                 st.plotly_chart(fig_bar, use_container_width=True)
@@ -691,10 +789,10 @@ def main() -> None:
                 )
                 fig_rad.update_layout(
                     polar=dict(radialaxis=dict(visible=True, range=[0, 5], dtick=1, gridcolor="#e2e8f0")),
-                    title=dict(text="Competency Radar Overlay", font=dict(size=14)),
+                    title=dict(text="GEARS Radar Overlay", font=dict(size=14)),
                     paper_bgcolor="rgba(0,0,0,0)",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                    height=310,
+                    height=295,
                     margin=dict(l=30, r=30, t=45, b=15),
                 )
                 st.plotly_chart(fig_rad, use_container_width=True)
@@ -716,7 +814,7 @@ def main() -> None:
             )
 
         with st.container(border=True):
-            st.markdown("#### Domain Comparison Table")
+            st.markdown("##### GEARS Domain Comparison Table")
             df_comp = pd.DataFrame(comp_rows)
             st.dataframe(
                 df_comp,
@@ -732,16 +830,119 @@ def main() -> None:
                 },
             )
 
+        st.markdown("#### B. Novelty GyNMA Comparison — Gynecologic Needle Motion Assessment (Scale 0–2, Total / 12)")
+        gc1, gc2, gc3, gc4 = st.columns(4)
+        gc1.metric("AI GyNMA Total", f"{g_ai_tot} / 12")
+        gc2.metric("Expert GyNMA Total", f"{g_exp_tot} / 12")
+        gc3.metric("GyNMA Difference", f"{g_ai_tot - g_exp_tot:+d}")
+        gc4.metric("GyNMA Agreement", f"{g_agreement_pct:.1f}% (MAE {g_mae:.2f})")
+
+        g_names = [d["name"] for d in GYNMA_DOMAINS]
+        g_ai_list = [g_ai_scores[d["id"]] for d in GYNMA_DOMAINS]
+        g_exp_list = [g_exp_scores[d["id"]] for d in GYNMA_DOMAINS]
+
+        gch1, gch2 = st.columns([1.35, 1.0])
+        with gch1:
+            with st.container(border=True):
+                fig_gbar = go.Figure(
+                    data=[
+                        go.Bar(name="AI GyNMA", x=g_names, y=g_ai_list, marker=dict(color="#4f46e5", cornerradius=6)),
+                        go.Bar(name="Expert GyNMA", x=g_names, y=g_exp_list, marker=dict(color="#10b981", cornerradius=6)),
+                    ]
+                )
+                fig_gbar.update_layout(
+                    barmode="group",
+                    title=dict(text="GyNMA Novelty: AI Score vs. Expert Score (0–2)", font=dict(size=14)),
+                    yaxis=dict(range=[0, 2.4], dtick=1, title="Score (0–2)", gridcolor="#f1f5f9"),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    height=295,
+                    margin=dict(l=15, r=15, t=45, b=15),
+                )
+                st.plotly_chart(fig_gbar, use_container_width=True)
+
+        with gch2:
+            with st.container(border=True):
+                fig_grad = go.Figure()
+                fig_grad.add_trace(
+                    go.Scatterpolar(
+                        r=g_ai_list + [g_ai_list[0]],
+                        theta=g_names + [g_names[0]],
+                        fill="toself",
+                        name="AI GyNMA",
+                        line=dict(color="#4f46e5", width=2),
+                        fillcolor="rgba(79, 70, 229, 0.18)",
+                    )
+                )
+                fig_grad.add_trace(
+                    go.Scatterpolar(
+                        r=g_exp_list + [g_exp_list[0]],
+                        theta=g_names + [g_names[0]],
+                        fill="toself",
+                        name="Expert GyNMA",
+                        line=dict(color="#10b981", width=2),
+                        fillcolor="rgba(16, 185, 129, 0.18)",
+                    )
+                )
+                fig_grad.update_layout(
+                    polar=dict(radialaxis=dict(visible=True, range=[0, 2], dtick=1, gridcolor="#e2e8f0")),
+                    title=dict(text="GyNMA Needle Kinematics Radar", font=dict(size=14)),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                    height=295,
+                    margin=dict(l=30, r=30, t=45, b=15),
+                )
+                st.plotly_chart(fig_grad, use_container_width=True)
+
+        g_comp_rows = []
+        for d in GYNMA_DOMAINS:
+            did = d["id"]
+            av, ev = g_ai_scores[did], g_exp_scores[did]
+            diff = av - ev
+            g_comp_rows.append(
+                {
+                    "GyNMA Domain": d["name"],
+                    "AI (0–2)": av,
+                    "Expert (0–2)": ev,
+                    "Diff (AI - Exp)": f"{diff:+d}" if diff != 0 else "0 (Match)",
+                    "Abs Error": abs(diff),
+                    "AI Motion Basis": st.session_state["gynma_ai_reasons"][did],
+                }
+            )
+
+        with st.container(border=True):
+            st.markdown("##### GyNMA Novelty Domain Comparison Table")
+            df_gcomp = pd.DataFrame(g_comp_rows)
+            st.dataframe(
+                df_gcomp,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "GyNMA Domain": st.column_config.TextColumn("GyNMA Domain", width="medium"),
+                    "AI (0–2)": st.column_config.NumberColumn("AI (0–2)", width="small"),
+                    "Expert (0–2)": st.column_config.NumberColumn("Expert (0–2)", width="small"),
+                    "Diff (AI - Exp)": st.column_config.TextColumn("Diff (AI - Exp)", width="small"),
+                    "Abs Error": st.column_config.NumberColumn("Abs Error", width="small"),
+                    "AI Motion Basis": st.column_config.TextColumn("AI Motion Basis", width="large"),
+                },
+            )
+
             summary_rows = [
                 {"Metric": "Video Filename", "Value": st.session_state.get("video_name", "")},
                 {"Metric": "Exported At", "Value": datetime.now().isoformat(timespec="seconds")},
                 {"Metric": "Segment Start (s)", "Value": round(float(st.session_state.get("seg_start", 0.0)), 1)},
                 {"Metric": "Segment End (s)", "Value": round(float(st.session_state.get("seg_end", 30.0)), 1)},
-                {"Metric": "AI Total Score (/ 30)", "Value": ai_tot},
-                {"Metric": "Expert Total Score (/ 30)", "Value": exp_tot},
-                {"Metric": "Difference (AI - Expert)", "Value": ai_tot - exp_tot},
-                {"Metric": "Mean Absolute Error (MAE)", "Value": round(mae, 3)},
-                {"Metric": "Agreement Rate (%)", "Value": round(agreement_pct, 1)},
+                {"Metric": "AI GEARS Total Score (/ 30)", "Value": ai_tot},
+                {"Metric": "Expert GEARS Total Score (/ 30)", "Value": exp_tot},
+                {"Metric": "GEARS Difference (AI - Expert)", "Value": ai_tot - exp_tot},
+                {"Metric": "GEARS MAE", "Value": round(mae, 3)},
+                {"Metric": "GEARS Agreement Rate (%)", "Value": round(agreement_pct, 1)},
+                {"Metric": "AI GyNMA Total Score (/ 12)", "Value": g_ai_tot},
+                {"Metric": "Expert GyNMA Total Score (/ 12)", "Value": g_exp_tot},
+                {"Metric": "GyNMA Difference (AI - Expert)", "Value": g_ai_tot - g_exp_tot},
+                {"Metric": "GyNMA MAE", "Value": round(g_mae, 3)},
+                {"Metric": "GyNMA Agreement Rate (%)", "Value": round(g_agreement_pct, 1)},
             ]
             if m is not None:
                 summary_rows.extend(
@@ -758,7 +959,8 @@ def main() -> None:
 
             xlsx_buf = io.BytesIO()
             with pd.ExcelWriter(xlsx_buf, engine="openpyxl") as writer:
-                df_comp.to_excel(writer, sheet_name="Domain Comparison", index=False)
+                df_comp.to_excel(writer, sheet_name="GEARS Comparison", index=False)
+                df_gcomp.to_excel(writer, sheet_name="GyNMA Novelty Comparison", index=False)
                 df_summary.to_excel(writer, sheet_name="Summary & Metrics", index=False)
                 for sheet_name in writer.sheets:
                     ws = writer.sheets[sheet_name]
@@ -768,13 +970,32 @@ def main() -> None:
                         ws.column_dimensions[col_letter].width = max(max_len + 4, 14)
 
             st.download_button(
-                "Export Comparison Report (.xlsx)",
+                "Export Full GEARS & GyNMA Comparison Report (.xlsx)",
                 data=xlsx_buf.getvalue(),
-                file_name="robogyn_ai_vs_expert_comparison.xlsx",
+                file_name="robogyn_gears_and_gynma_comparison.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 type="primary",
                 use_container_width=True,
             )
+
+    # =======================================================================
+    # STEP 5: GyNMA Module (Full Stitch-Level Novelty Assessment)
+    # =======================================================================
+    elif active_idx == 4:
+        vpath_g = st.session_state.get("video_path")
+        seg_s = float(st.session_state.get("seg_start", 0.0))
+        seg_e = float(st.session_state.get("seg_end", 30.0))
+        trimmed_p = ensure_trimmed_segment_mp4(vpath_g, seg_s, seg_e) if (vpath_g and os.path.exists(vpath_g)) else None
+        render_gynma(
+            assessment_id="RG-001",
+            procedure="Robotic hysterectomy",
+            task="Vaginal cuff suturing",
+            segment_start=seg_s,
+            segment_end=seg_e,
+            trimmed_video_path=trimmed_p,
+            ai_gynma_scores=st.session_state.get("gynma_ai_scores"),
+            ai_gynma_reasons=st.session_state.get("gynma_ai_reasons"),
+        )
 
 
 if __name__ == "__main__":
