@@ -442,10 +442,9 @@ def main() -> None:
         "2. Scoring AI",
         "3. Scoring Expert",
         "4. AI vs. Expert Comparison",
-        "5. GyNMA Module (Novelty)",
     ]
-    active_idx = int(st.session_state.get("active_tab_idx", 0))
-    nav_cols = st.columns(5)
+    active_idx = min(int(st.session_state.get("active_tab_idx", 0)), 3)
+    nav_cols = st.columns(4)
     for idx, label in enumerate(step_labels):
         with nav_cols[idx]:
             if st.button(
@@ -977,25 +976,6 @@ def main() -> None:
                 type="primary",
                 use_container_width=True,
             )
-
-    # =======================================================================
-    # STEP 5: GyNMA Module (Full Stitch-Level Novelty Assessment)
-    # =======================================================================
-    elif active_idx == 4:
-        vpath_g = st.session_state.get("video_path")
-        seg_s = float(st.session_state.get("seg_start", 0.0))
-        seg_e = float(st.session_state.get("seg_end", 30.0))
-        trimmed_p = ensure_trimmed_segment_mp4(vpath_g, seg_s, seg_e) if (vpath_g and os.path.exists(vpath_g)) else None
-        render_gynma(
-            assessment_id="RG-001",
-            procedure="Robotic hysterectomy",
-            task="Vaginal cuff suturing",
-            segment_start=seg_s,
-            segment_end=seg_e,
-            trimmed_video_path=trimmed_p,
-            ai_gynma_scores=st.session_state.get("gynma_ai_scores"),
-            ai_gynma_reasons=st.session_state.get("gynma_ai_reasons"),
-        )
 
 
 if __name__ == "__main__":
