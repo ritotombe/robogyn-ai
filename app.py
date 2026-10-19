@@ -683,6 +683,37 @@ def main() -> None:
                     )
 
         st.markdown("#### B. Expert Novelty GyNMA — Gynecologic Needle Motion Scoring (Scale 0–2, Max 12)")
+        with st.container(border=True):
+            meta_c1, meta_c2, meta_c3, meta_c4 = st.columns(4)
+            with meta_c1:
+                st.session_state["gynma_stitch_id"] = st.text_input(
+                    "Stitch / Needle-Pass ID",
+                    value=st.session_state.get("gynma_stitch_id", "ST-001"),
+                )
+            with meta_c2:
+                phases = ["Positioning", "Entry", "Driving", "Exit", "Withdrawal", "Regrasp"]
+                cur_ph = st.session_state.get("gynma_phase", "Driving")
+                st.session_state["gynma_phase"] = st.selectbox(
+                    "Suturing Phase Under Review",
+                    phases,
+                    index=phases.index(cur_ph) if cur_ph in phases else 2,
+                )
+            with meta_c3:
+                st.session_state["gynma_event_time"] = st.number_input(
+                    "Event Timestamp (s)",
+                    min_value=0.0,
+                    value=float(st.session_state.get("gynma_event_time", st.session_state.get("seg_start", 0.0))),
+                    step=0.5,
+                )
+            with meta_c4:
+                vis_opts = ["Adequate", "Partially obscured", "Not assessable"]
+                cur_vis = st.session_state.get("gynma_visibility", "Adequate")
+                st.session_state["gynma_visibility"] = st.selectbox(
+                    "View Adequacy",
+                    vis_opts,
+                    index=vis_opts.index(cur_vis) if cur_vis in vis_opts else 0,
+                )
+
         g_exp_cols = st.columns(2)
         for idx, d in enumerate(GYNMA_DOMAINS):
             did = d["id"]
@@ -703,6 +734,14 @@ def main() -> None:
                         key=f"exp_gynma_slider_{did}",
                         label_visibility="collapsed",
                     )
+
+        with st.container(border=True):
+            st.session_state["gynma_notes"] = st.text_area(
+                "Timestamped Observations / Clinical Notes",
+                value=st.session_state.get("gynma_notes", ""),
+                placeholder="e.g., 00:54 needle grasped at 2/3 shaft; smooth arc drive; single regrasp on withdrawal...",
+                height=75,
+            )
 
         if st.button("Continue to 4. AI vs. Expert Comparison", type="primary", use_container_width=True):
             st.session_state["active_tab_idx"] = 3
@@ -907,6 +946,7 @@ def main() -> None:
                     "Diff (AI - Exp)": f"{diff:+d}" if diff != 0 else "0 (Match)",
                     "Abs Error": abs(diff),
                     "AI Motion Basis": st.session_state["gynma_ai_reasons"][did],
+                    "Practice Prompt": d["feedback"],
                 }
             )
 
@@ -914,7 +954,7 @@ def main() -> None:
             st.markdown("##### GyNMA Novelty Domain Comparison Table")
             df_gcomp = pd.DataFrame(g_comp_rows)
             st.dataframe(
-                df_gcomp,
+                df_gcomp.drop(columns=["Practice Prompt"]),
                 use_container_width=True,
                 hide_index=True,
                 column_config={
@@ -927,9 +967,22 @@ def main() -> None:
                 },
             )
 
+            st.markdown("**Suggested Review & Practice Priorities (Lowest Expert-Rated GyNMA Domains)**")
+            sorted_g = sorted(GYNMA_DOMAINS, key=lambda item: g_exp_scores[item["id"]])[:2]
+            for item in sorted_g:
+                sc_val = g_exp_scores[item["id"]]
+                st.markdown(f"- **{item['name']} ({sc_val} / 2):** {item['feedback']}")
+
+            if st.session_state.get("gynma_notes"):
+                st.caption(f"Clinical Notes ({st.session_state.get('gynma_stitch_id', 'ST-001')} • {st.session_state.get('gynma_phase', 'Driving')}): {st.session_state.get('gynma_notes')}")
+
             summary_rows = [
                 {"Metric": "Video Filename", "Value": st.session_state.get("video_name", "")},
                 {"Metric": "Exported At", "Value": datetime.now().isoformat(timespec="seconds")},
+                {"Metric": "Stitch / Needle-Pass ID", "Value": st.session_state.get("gynma_stitch_id", "ST-001")},
+                {"Metric": "Suturing Phase Under Review", "Value": st.session_state.get("gynma_phase", "Driving")},
+                {"Metric": "Event Timestamp (s)", "Value": round(float(st.session_state.get("gynma_event_time", 0.0)), 1)},
+                {"Metric": "View Adequacy", "Value": st.session_state.get("gynma_visibility", "Adequate")},
                 {"Metric": "Segment Start (s)", "Value": round(float(st.session_state.get("seg_start", 0.0)), 1)},
                 {"Metric": "Segment End (s)", "Value": round(float(st.session_state.get("seg_end", 30.0)), 1)},
                 {"Metric": "AI GEARS Total Score (/ 30)", "Value": ai_tot},
@@ -942,6 +995,7 @@ def main() -> None:
                 {"Metric": "GyNMA Difference (AI - Expert)", "Value": g_ai_tot - g_exp_tot},
                 {"Metric": "GyNMA MAE", "Value": round(g_mae, 3)},
                 {"Metric": "GyNMA Agreement Rate (%)", "Value": round(g_agreement_pct, 1)},
+                {"Metric": "Clinical Notes", "Value": st.session_state.get("gynma_notes", "")},
             ]
             if m is not None:
                 summary_rows.extend(
