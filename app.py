@@ -434,7 +434,7 @@ def main() -> None:
 
     st.markdown("## RoboGyn-AI")
     st.caption(
-        "Robotic Suturing Video Assessment  |  Standard GEARS (1–5) & Novelty GyNMA Needle Motion Assessment (0–2)"
+        "Robotic Suturing Video Assessment  |  GEARS (1–5) & GyNMA Needle Motion Assessment (0–2)"
     )
 
     step_labels = [
@@ -537,7 +537,7 @@ def main() -> None:
                     st.video(bpath, start_time=int(start_s))
 
     # =======================================================================
-    # STEP 2: Scoring AI (GEARS 1–5 + GyNMA Novelty 0–2)
+    # STEP 2: Scoring AI (GEARS 1–5 + GyNMA 0–2)
     # =======================================================================
     elif active_idx == 1:
         m: Optional[VideoMotionMetrics] = st.session_state["metrics"]
@@ -585,7 +585,7 @@ def main() -> None:
                     if st.session_state["heatmap"] is not None:
                         st.image(st.session_state["heatmap"], use_container_width=True)
 
-            st.markdown("#### A. AI Standard GEARS Domain Scores (Scale 1–5, Max 30)")
+            st.markdown("#### A. AI GEARS Domain Scores (Scale 1–5, Max 30)")
             grid_cols = st.columns(2)
             for idx, d in enumerate(GEARS_DOMAINS):
                 did = d["id"]
@@ -599,7 +599,7 @@ def main() -> None:
                         st.progress(sc / 5.0)
                         st.caption(reason)
 
-            st.markdown("#### B. AI Novelty GyNMA — Gynecologic Needle Motion Scores (Scale 0–2, Max 12)")
+            st.markdown("#### B. AI GyNMA — Gynecologic Needle Motion Scores (Scale 0–2, Max 12)")
             g_cols = st.columns(2)
             for idx, d in enumerate(GYNMA_DOMAINS):
                 did = d["id"]
@@ -618,7 +618,7 @@ def main() -> None:
                 st.rerun()
 
     # =======================================================================
-    # STEP 3: Scoring Expert (Selected Segment Video + GEARS + GyNMA Novelty)
+    # STEP 3: Scoring Expert (Selected Segment Video + GEARS + GyNMA)
     # =======================================================================
     elif active_idx == 2:
         for d in GEARS_DOMAINS:
@@ -653,14 +653,14 @@ def main() -> None:
         else:
             top_c1, top_c2, top_c3 = st.columns([2.4, 1, 1])
             with top_c1:
-                st.markdown("#### Expert Clinical Evaluation (GEARS & GyNMA Novelty)")
-                st.caption("Rate the 6 standard GEARS domains (1–5) and 6 Novelty GyNMA needle domains (0–2).")
+                st.markdown("#### Expert Clinical Evaluation (GEARS & GyNMA)")
+                st.caption("Rate the 6 GEARS domains (1–5) and 6 GyNMA needle domains (0–2).")
             with top_c2:
                 st.metric("Expert GEARS Total", f"{exp_tot_now} / 30")
             with top_c3:
                 st.metric("Expert GyNMA Total", f"{exp_gynma_tot} / 12")
 
-        st.markdown("#### A. Expert Standard GEARS Scoring (Scale 1–5, Max 30)")
+        st.markdown("#### A. Expert GEARS Scoring (Scale 1–5, Max 30)")
         exp_cols = st.columns(2)
         for idx, d in enumerate(GEARS_DOMAINS):
             did = d["id"]
@@ -682,7 +682,7 @@ def main() -> None:
                         label_visibility="collapsed",
                     )
 
-        st.markdown("#### B. Expert Novelty GyNMA — Gynecologic Needle Motion Scoring (Scale 0–2, Max 12)")
+        st.markdown("#### B. Expert GyNMA — Gynecologic Needle Motion Scoring (Scale 0–2, Max 12)")
         with st.container(border=True):
             meta_c1, meta_c2, meta_c3, meta_c4 = st.columns(4)
             with meta_c1:
@@ -770,7 +770,7 @@ def main() -> None:
         g_mae = float(np.mean([abs(x) for x in g_diffs]))
         g_agreement_pct = max(0.0, (1.0 - g_mae / 2.0) * 100.0)
 
-        st.markdown("#### A. Standard GEARS Comparison (Scale 1–5, Total / 30)")
+        st.markdown("#### A. GEARS Comparison (Scale 1–5, Total / 30)")
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("AI GEARS Total", f"{ai_tot} / 30")
         c2.metric("Expert GEARS Total", f"{exp_tot} / 30")
@@ -868,7 +868,7 @@ def main() -> None:
                 },
             )
 
-        st.markdown("#### B. Novelty GyNMA Comparison — Gynecologic Needle Motion Assessment (Scale 0–2, Total / 12)")
+        st.markdown("#### B. GyNMA Comparison — Gynecologic Needle Motion Assessment (Scale 0–2, Total / 12)")
         gc1, gc2, gc3, gc4 = st.columns(4)
         gc1.metric("AI GyNMA Total", f"{g_ai_tot} / 12")
         gc2.metric("Expert GyNMA Total", f"{g_exp_tot} / 12")
@@ -890,7 +890,7 @@ def main() -> None:
                 )
                 fig_gbar.update_layout(
                     barmode="group",
-                    title=dict(text="GyNMA Novelty: AI Score vs. Expert Score (0–2)", font=dict(size=14)),
+                    title=dict(text="GyNMA: AI Score vs. Expert Score (0–2)", font=dict(size=14)),
                     yaxis=dict(range=[0, 2.4], dtick=1, title="Score (0–2)", gridcolor="#f1f5f9"),
                     paper_bgcolor="rgba(0,0,0,0)",
                     plot_bgcolor="rgba(0,0,0,0)",
@@ -951,7 +951,7 @@ def main() -> None:
             )
 
         with st.container(border=True):
-            st.markdown("##### GyNMA Novelty Domain Comparison Table")
+            st.markdown("##### GyNMA Domain Comparison Table")
             df_gcomp = pd.DataFrame(g_comp_rows)
             st.dataframe(
                 df_gcomp.drop(columns=["Practice Prompt"]),
@@ -1013,7 +1013,7 @@ def main() -> None:
             xlsx_buf = io.BytesIO()
             with pd.ExcelWriter(xlsx_buf, engine="openpyxl") as writer:
                 df_comp.to_excel(writer, sheet_name="GEARS Comparison", index=False)
-                df_gcomp.to_excel(writer, sheet_name="GyNMA Novelty Comparison", index=False)
+                df_gcomp.to_excel(writer, sheet_name="GyNMA Comparison", index=False)
                 df_summary.to_excel(writer, sheet_name="Summary & Metrics", index=False)
                 for sheet_name in writer.sheets:
                     ws = writer.sheets[sheet_name]
